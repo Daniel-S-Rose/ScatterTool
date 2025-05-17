@@ -10,10 +10,6 @@ class_name ScatterTool
 @export var update: bool = false
 ## Clears any spawned Nodes.
 @export var clear: bool = false
-## Determines whether or not to randomly rotate spawned nodes on their Y-Axis.
-@export var random_rotation: bool = true: set = _set_random_rotation
-## Determines the scale to spawn child Nodes at.
-@export var instance_scale_range: Vector2 = Vector2(1, 1)
 ## Determines the range at which this Node will spawn child Nodes.
 @export var scatter_range: float = 20.0
 ## Determines how close together spawned Nodes can be.
@@ -21,7 +17,10 @@ class_name ScatterTool
 ## Determines how far this Node must be moved in the Editor before clearing any spawned nodes, and running the scatter function.
 @export var update_distance: float = 0.5
 ## The data used to drive this Nodes core functionality. This variable must be set in order to achieve any results with this Node.
-@export var scatter_data: ScatterData
+@export var scatter_data: ScatterData:
+	set(value):
+		scatter_data = value
+		_get_configuration_warnings()
 ## Used by this Node to determine whether or not to updated when moved in the Editor.
 var location: Vector3: set = _set_location
 ## Used by this Node to determine child Node naming.
@@ -40,10 +39,6 @@ func _set_location(value: Vector3) -> void:
 		or value.y <= location.y - update_distance:
 			location = value
 			update = true
-func _set_random_rotation(value: bool) -> void:
-	if Engine.is_editor_hint():
-		random_rotation = value
-		update = true
 
 
 func _process(_delta: float) -> void:
@@ -141,28 +136,25 @@ func create_multimesh(data) -> void:
 	multimesh.multimesh.transform_format = MultiMesh.TRANSFORM_3D
 	multimesh.multimesh.mesh = data.mesh
 	multimesh.multimesh.instance_count = data.num
-	var last_pos: Vector3 = Vector3.ZERO
 	var pos: Vector3 = Vector3.ZERO
 	
 	for n in data.num:
-		while too_close(pos, last_pos):
+		var success: bool = false
+		while not success:
 			pos = Vector3(randf_range(-scatter_range, scatter_range), 0, randf_range(-scatter_range, scatter_range))
-		last_pos = pos
-		# Raycast downward from a hight point looking for an object that has collision.
-		# Then set the y value of pos to be the intersection point.
-		var origin: Vector3 = self.global_position + (pos + Vector3(0, 50, 0))
-		var destination: Vector3 = self.global_position + (pos - Vector3(0, 50, 0))
-		var phys_query := PhysicsRayQueryParameters3D.create(origin, destination)
-		var intersection = get_world_3d().direct_space_state.intersect_ray(phys_query)
-		if not intersection.is_empty():
-			pos.y = intersection.position.y - self.global_position.y
+			var origin: Vector3 = self.global_position + (pos + Vector3(0, 200, 0))
+			var destination: Vector3 = self.global_position + (pos - Vector3(0, 200, 0))
+			var phys_query := PhysicsRayQueryParameters3D.create(origin, destination)
+			phys_query.collide_with_areas = true
+			var intersection = get_world_3d().direct_space_state.intersect_ray(phys_query)
+			if not intersection.is_empty():
+				if not intersection["collider"].is_in_group("excluded"):
+					pos.y = intersection.position.y - self.global_position.y
+					success = true
 		
-		var rand_scale := float(randf_range(instance_scale_range.x, instance_scale_range.y))
-		if random_rotation:
-			multimesh.multimesh.set_instance_transform(n,
-			Transform3D(self.basis.rotated(self.basis.y, randf_range(-180, 180)).scaled(Vector3(rand_scale, rand_scale, rand_scale)), pos))
-		else:
-			multimesh.multimesh.set_instance_transform(n, Transform3D(self.basis.scaled(Vector3(rand_scale, rand_scale, rand_scale)), pos))
+		var rand_scale := float(randf_range(data.scale_range.x, data.scale_range.y))
+		multimesh.multimesh.set_instance_transform(n,
+		Transform3D(self.basis.rotated(self.basis.y, deg_to_rad(randf_range(data.rand_rotation.x, data.rand_rotation.y))).scaled(Vector3(rand_scale, rand_scale, rand_scale)), pos))
 		
 		if data is FoliageData:
 			continue
@@ -179,22 +171,21 @@ func create_multimesh(data) -> void:
 
 ## Instantiates a scene for the passed SceneData value.
 func create_scene_instance(data: SceneData) -> void:
-	var last_pos := Vector3.ZERO
 	var pos := Vector3.ZERO
 	var last_instance_name: String = ""
 	for n in data.num:
 		var instance = data.scene.instantiate()
-		while last_pos == pos:
+		var success: bool = false
+		while not success:
 			pos = Vector3(randf_range(-scatter_range, scatter_range), 0, randf_range(-scatter_range, scatter_range))
-		last_pos = pos
-		print(pos)
-		var origin: Vector3 = self.global_position + (pos + Vector3(0, 50, 0))
-		var destination: Vector3 = self.global_position + (pos - Vector3(0, 50, 0))
-		var phys_query := PhysicsRayQueryParameters3D.create(origin, destination)
-		var intersection = get_world_3d().direct_space_state.intersect_ray(phys_query)
-		if not intersection.is_empty():
-			pos.y = intersection.position.y - self.global_position.y
-			last_pos = pos
+			var origin: Vector3 = self.global_position + (pos + Vector3(0, 50, 0))
+			var destination: Vector3 = self.global_position + (pos - Vector3(0, 50, 0))
+			var phys_query := PhysicsRayQueryParameters3D.create(origin, destination)
+			var intersection = get_world_3d().direct_space_state.intersect_ray(phys_query)
+			if not intersection.is_empty():
+				if not intersection["collider"].is_in_group("excluded"):
+					pos.y = intersection.position.y - self.global_position.y
+					success = true
 		
 		if last_instance_name == "":
 			last_instance_name = instance.name
@@ -208,8 +199,9 @@ func create_scene_instance(data: SceneData) -> void:
 		add_child(instance)
 		instance.owner = self.owner
 		instance.position = pos
-		if random_rotation:
-			instance.rotation.y = randf_range(-180, 180)
+		instance.rotation.y = randf_range(data.rand_rotation.x, data.rand_rotation.y)
+		var rand_scale: float = randf_range(data.scale_range.x, data.scale_range.y)
+		instance.scale = Vector3(rand_scale, rand_scale, rand_scale)
 
 
 ## Used to push a node configuration warning if the scatter_data variable is not set.
